@@ -19,6 +19,7 @@ from .const import CONF_CLIENT_IP, CONF_SUBNET, DOMAIN
 from .discovery import (
     async_discover_neewer_lights,
     async_get_local_networks,
+    async_resolve_client_ip,
     client_ip_for_host,
     client_ip_for_network,
     DiscoveredDevice,
@@ -53,6 +54,8 @@ async def _async_validate_host(hass: HomeAssistant, host: str) -> DiscoveredDevi
 
     networks = await async_get_local_networks(hass)
     client_ip = client_ip_for_host(host, networks)
+    if client_ip is None:
+        client_ip = await async_resolve_client_ip(hass, host)
     if client_ip is None:
         _LOGGER.warning(
             "No local network adapter found for light %s (adapters: %s)",

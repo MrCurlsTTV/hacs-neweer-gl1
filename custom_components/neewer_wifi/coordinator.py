@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import DOMAIN
-from .discovery import async_get_local_networks, client_ip_for_host
+from .discovery import async_get_local_networks, async_resolve_client_ip, client_ip_for_host
 from .protocol import (
     NeewerProtocol,
     ha_brightness_to_protocol,
@@ -77,6 +77,8 @@ class NeewerDataUpdateCoordinator(DataUpdateCoordinator[NeewerLightState]):
             return self.entry.data["client_ip"]
         networks = await async_get_local_networks(self.hass)
         client_ip = client_ip_for_host(self.host, networks)
+        if client_ip is None:
+            client_ip = await async_resolve_client_ip(self.hass, self.host)
         if client_ip is None:
             _LOGGER.error(
                 "Cannot determine client IP for light %s on host networks",

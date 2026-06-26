@@ -4,10 +4,13 @@ import ipaddress
 
 from custom_components.neewer_wifi.discovery import (
     _hosts_for_network,
+    _hex_be_word_to_ipv4,
     _is_private_ipv4,
+    _prefixlen_from_route_mask,
     client_ip_for_host,
     client_ip_for_network,
     parse_ipv4_network,
+    parse_proc_net_route,
 )
 
 
@@ -77,3 +80,28 @@ def test_client_ip_for_network_overlap() -> None:
     ]
     scan_network = ipaddress.IPv4Network("192.168.103.0/24")
     assert client_ip_for_network(scan_network, networks) == "192.168.103.50"
+
+
+def test_hex_be_word_to_ipv4() -> None:
+    """Route table addresses are little-endian hex words."""
+    assert _hex_be_word_to_ipv4("0067A8C0") == "192.168.103.0"
+    assert _hex_be_word_to_ipv4("0167A8C0") == "192.168.103.1"
+
+
+def test_prefixlen_from_route_mask() -> None:
+    """Route masks map to CIDR prefix lengths."""
+    assert _prefixlen_from_route_mask("00FFFFFF") == 24
+
+
+def test_parse_proc_net_route_private_network() -> None:
+    """Private connected routes should be parsed for discovery."""
+    content = """Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+enp16s0\t0067A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0
+enp16s0\t00000000\t0167A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
+docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0
+"""
+    routes = parse_proc_net_route(content)
+    assert len(routes) == 1
+    assert routes[0].iface == "enp16s0"
+    assert str(routes[0].network) == "192.168.103.0/24"
+    assert routes[0].gateway == "0.0.0.0"

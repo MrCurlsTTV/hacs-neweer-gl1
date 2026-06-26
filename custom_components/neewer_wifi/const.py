@@ -24,6 +24,9 @@ CONF_SUBNET = "subnet"
 PROBE_TIMEOUT = 2.0
 DISCOVERY_CONCURRENCY = 30
 MAX_SCAN_DURATION = 45.0
+MIN_ROUTE_SCAN_PREFIXLEN = 24
+PROC_NET_ROUTE = "/proc/net/route"
+SKIP_ROUTE_IFACE_PREFIXES = ("docker", "br-", "veth", "virbr", "vmnet", "tun", "tap", "wg")
 
 HEARTBEAT_ACK = bytes([0x80, 0x03, 0x00, 0x83])
 WAKEUP_PACKET = bytes([0x80, 0x06, 0x01, 0x01, 0x88])
