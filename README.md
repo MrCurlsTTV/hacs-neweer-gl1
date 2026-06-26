@@ -74,8 +74,8 @@ The light does not report its state over UDP. The integration tracks state local
 
 | Issue | Action |
 |-------|--------|
-| Discovery finds nothing | Confirm light is on WiFi; try manual IP; ensure HA host is on the same LAN/subnet |
-| Cannot connect | Close Neewer app; reload integration |
+| Discovery finds nothing | Confirm light is on WiFi; enter a subnet on the discovery screen (e.g. `192.168.103.0/24`); try manual IP |
+| Cannot connect / manual setup fails | Close Neewer app; if the light is on another subnet, enter the Home Assistant IP that can reach it as **client IP** |
 | Port 5052 in use | Another process bound UDP 5052; stop conflicting service |
 | Wrong brightness/temp | State is local-only; turn light off/on from HA to resync |
 

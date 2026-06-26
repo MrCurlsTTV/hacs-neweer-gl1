@@ -99,7 +99,7 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         loop = self.hass.loop
         await loop.create_datagram_endpoint(
             lambda: self,
-            local_addr=("", DEFAULT_PORT),
+            local_addr=("0.0.0.0", DEFAULT_PORT),
             family=socket.AF_INET,
         )
         await self._ready.wait()
@@ -242,7 +242,7 @@ async def async_probe_light(
     Probe a host for a Neewer WiFi light using handshake + wakeup + heartbeat.
 
     Uses an ephemeral UDP port so many probes can run concurrently during discovery.
-  Returns True if a plausible Neewer response is received.
+    Returns True if a plausible Neewer response is received.
     """
     loop = asyncio.get_running_loop()
     response_future: asyncio.Future[bytes] = loop.create_future()
@@ -258,7 +258,7 @@ async def async_probe_light(
 
     transport, _ = await loop.create_datagram_endpoint(
         _ProbeProtocol,
-        local_addr=("", 0),
+        local_addr=("0.0.0.0", 0),
         family=socket.AF_INET,
     )
 

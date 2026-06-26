@@ -44,6 +44,32 @@ def _is_private_ipv4(address: str) -> bool:
     return ip.version == 4 and ip.is_private and not ip.is_loopback
 
 
+def parse_ipv4_network(subnet: str) -> ipaddress.IPv4Network:
+    """Parse a CIDR string or bare IPv4 address (/24 assumed)."""
+    subnet = subnet.strip()
+    if not subnet:
+        raise ValueError("empty subnet")
+    if "/" not in subnet:
+        subnet = f"{subnet}/24"
+    return ipaddress.IPv4Network(subnet, strict=False)
+
+
+def client_ip_for_network(
+    network: ipaddress.IPv4Network,
+    networks: list[tuple[str, ipaddress.IPv4Network]],
+) -> str | None:
+    """Return the Home Assistant client IP on the same network as scan_network."""
+    for client_ip, local_net in networks:
+        if network.overlaps(local_net):
+            return client_ip
+        try:
+            if ipaddress.ip_address(client_ip) in network:
+                return client_ip
+        except ValueError:
+            continue
+    return None
+
+
 def _hosts_for_network(network: ipaddress.IPv4Network) -> list[str]:
     """Enumerate assignable host addresses for a network."""
     if network.num_addresses <= 2:
@@ -95,29 +121,36 @@ def client_ip_for_host(
     for client_ip, network in networks:
         if target in network:
             return client_ip
-    return networks[0][0] if networks else None
+    return None
 
 
 async def async_discover_neewer_lights(
     hass: HomeAssistant,
     *,
     hosts: list[str] | None = None,
+    scan_networks: list[ipaddress.IPv4Network] | None = None,
+    client_ip_override: str | None = None,
     exclude_hosts: set[str] | None = None,
 ) -> list[DiscoveredDevice]:
     """
     Discover Neewer WiFi lights by UDP handshake probing on port 5052.
 
     When hosts is omitted, all hosts on local private subnets are scanned.
+    scan_networks limits discovery to specific subnets.
     """
     exclude = exclude_hosts or set()
     local_networks = await async_get_local_networks(hass)
 
-    if hosts is None:
-        candidate_hosts: list[str] = []
-        for _client_ip, network in local_networks:
+    if hosts is not None:
+        candidate_hosts = list(hosts)
+    elif scan_networks is not None:
+        candidate_hosts = []
+        for network in scan_networks:
             candidate_hosts.extend(_hosts_for_network(network))
     else:
-        candidate_hosts = list(hosts)
+        candidate_hosts = []
+        for _client_ip, network in local_networks:
+            candidate_hosts.extend(_hosts_for_network(network))
 
     candidate_hosts = [
         host
@@ -139,7 +172,7 @@ async def async_discover_neewer_lights(
     async def _probe(host: str) -> None:
         if asyncio.get_running_loop().time() - scan_started > MAX_SCAN_DURATION:
             return
-        client_ip = client_ip_for_host(host, local_networks)
+        client_ip = client_ip_override or client_ip_for_host(host, local_networks)
         if client_ip is None:
             return
         async with semaphore:

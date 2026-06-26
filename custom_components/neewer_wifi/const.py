@@ -19,6 +19,7 @@ DEFAULT_MODEL = "Neewer GL1 Pro"
 
 CONF_HOST = "host"
 CONF_CLIENT_IP = "client_ip"
+CONF_SUBNET = "subnet"
 
 PROBE_TIMEOUT = 2.0
 DISCOVERY_CONCURRENCY = 30
