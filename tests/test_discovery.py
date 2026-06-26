@@ -105,3 +105,14 @@ docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0
     assert routes[0].iface == "enp16s0"
     assert str(routes[0].network) == "192.168.103.0/24"
     assert routes[0].gateway == "0.0.0.0"
+
+
+def test_parse_proc_net_route_skips_broader_than_sl16() -> None:
+    """Routes broader than /16 should not be scanned."""
+    content = """Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+enp16s0\t0000000A\t00000000\t0001\t0\t0\t100\t000000FF\t0\t0\t0
+enp16s0\t000010AC\t00000000\t0001\t0\t0\t100\t0000FFFF\t0\t0\t0
+"""
+    routes = parse_proc_net_route(content)
+    assert len(routes) == 1
+    assert str(routes[0].network) == "172.16.0.0/16"

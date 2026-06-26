@@ -58,7 +58,7 @@ Discovery enumerates **private RFC1918** IPv4 subnets from Home Assistant networ
 2. Wakeup packet
 3. Heartbeat packet
 
-Routed subnets (for example a light VLAN reachable via a gateway) are included automatically when a matching private route exists. Virtual interfaces such as Docker bridges are skipped. Routes broader than `/24` are ignored to avoid huge scans.
+Routed subnets (for example a light VLAN reachable via a gateway) are included automatically when a matching private route exists. Virtual interfaces such as Docker bridges are skipped. Routes broader than `/16` are ignored to avoid huge scans.
 
 A host is identified as a Neewer light when a plausible protocol response is received (heartbeat ack `80 03 00 83`). Probes use ephemeral source ports with limited concurrency (30 workers) and per-host timeouts (~2s).
 

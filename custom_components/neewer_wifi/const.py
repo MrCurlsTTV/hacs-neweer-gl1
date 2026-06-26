@@ -24,7 +24,7 @@ CONF_SUBNET = "subnet"
 PROBE_TIMEOUT = 2.0
 DISCOVERY_CONCURRENCY = 30
 MAX_SCAN_DURATION = 45.0
-MIN_ROUTE_SCAN_PREFIXLEN = 24
+MIN_ROUTE_SCAN_PREFIXLEN = 16
 PROC_NET_ROUTE = "/proc/net/route"
 SKIP_ROUTE_IFACE_PREFIXES = ("docker", "br-", "veth", "virbr", "vmnet", "tun", "tap", "wg")
 
