@@ -8,7 +8,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from homeassistant.helpers.network import async_get_adapters
+from homeassistant.components.network import async_get_adapters
 
 from .const import (
     DEFAULT_MODEL,
