@@ -105,7 +105,12 @@ async def async_get_local_networks(hass: HomeAssistant) -> list[tuple[str, ipadd
             networks.append((address, network))
 
     if not networks:
-        _LOGGER.debug("No private IPv4 adapters found for discovery")
+        _LOGGER.warning("No private IPv4 adapters found for discovery")
+    else:
+        _LOGGER.info(
+            "Local adapters for discovery: %s",
+            ", ".join(f"{addr}/{net.prefixlen}" for addr, net in networks),
+        )
     return networks
 
 
@@ -159,21 +164,35 @@ async def async_discover_neewer_lights(
     ]
 
     if not candidate_hosts:
+        _LOGGER.info("No candidate hosts to scan for Neewer lights")
         return []
 
-    _LOGGER.debug(
-        "Starting Neewer discovery across %d candidate hosts", len(candidate_hosts)
+    scan_label = (
+        ", ".join(str(network) for network in scan_networks)
+        if scan_networks
+        else "local adapters"
+    )
+    _LOGGER.info(
+        "Starting Neewer discovery on %s (%d hosts, client IP %s)",
+        scan_label,
+        len(candidate_hosts),
+        client_ip_override or "per-host",
     )
 
     semaphore = asyncio.Semaphore(DISCOVERY_CONCURRENCY)
     discovered: dict[str, DiscoveredDevice] = {}
     scan_started = asyncio.get_running_loop().time()
+    skipped_no_client_ip = 0
+    probe_errors = 0
 
     async def _probe(host: str) -> None:
+        nonlocal skipped_no_client_ip, probe_errors
         if asyncio.get_running_loop().time() - scan_started > MAX_SCAN_DURATION:
             return
         client_ip = client_ip_override or client_ip_for_host(host, local_networks)
         if client_ip is None:
+            skipped_no_client_ip += 1
+            _LOGGER.debug("Skipping %s: no client IP on matching subnet", host)
             return
         async with semaphore:
             try:
@@ -183,6 +202,7 @@ async def async_discover_neewer_lights(
                     timeout=PROBE_TIMEOUT,
                 )
             except OSError as err:
+                probe_errors += 1
                 _LOGGER.debug("Probe error for %s: %s", host, err)
                 return
             if found:
@@ -194,8 +214,17 @@ async def async_discover_neewer_lights(
                     name=name,
                     client_ip=client_ip,
                 )
-                _LOGGER.debug("Discovered Neewer light at %s", host)
+                _LOGGER.info("Discovered Neewer light at %s (client IP %s)", host, client_ip)
 
     await asyncio.gather(*(_probe(host) for host in candidate_hosts))
+
+    elapsed = asyncio.get_running_loop().time() - scan_started
+    _LOGGER.info(
+        "Neewer discovery finished in %.1fs: %d found, %d skipped (no client IP), %d probe errors",
+        elapsed,
+        len(discovered),
+        skipped_no_client_ip,
+        probe_errors,
+    )
 
     return sorted(discovered.values(), key=lambda device: ipaddress.ip_address(device.host))

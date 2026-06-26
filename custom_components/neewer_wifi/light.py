@@ -40,6 +40,7 @@ async def async_setup_entry(
         raise RuntimeError(f"Coordinator missing for entry {entry.entry_id}")
 
     async_add_entities([NeewerWifiLight(coordinator, entry)])
+    _LOGGER.info("Added light entity for %s", entry.data[CONF_HOST])
 
 
 class NeewerWifiLight(CoordinatorEntity[NeewerDataUpdateCoordinator], LightEntity):

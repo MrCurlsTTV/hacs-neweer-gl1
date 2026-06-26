@@ -104,6 +104,7 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         )
         await self._ready.wait()
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        _LOGGER.info("UDP socket bound on 0.0.0.0:%d", DEFAULT_PORT)
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         """Store transport when the UDP endpoint is ready."""
@@ -116,6 +117,7 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         session = self._sessions.get(host)
         if session is not None and is_neewer_response(data):
             session.last_response = data
+            _LOGGER.debug("Received %d bytes from %s: %s", len(data), host, data.hex())
 
     def error_received(self, exc: Exception) -> None:
         """Log UDP socket errors."""
@@ -131,6 +133,7 @@ class NeewerProtocol(asyncio.DatagramProtocol):
                 pass
         if self.transport is not None:
             self.transport.close()
+            _LOGGER.info("UDP socket on port %d closed", DEFAULT_PORT)
 
     def register_light(self, host: str, client_ip: str) -> _LightSession:
         """Register a light host for session tracking."""
@@ -144,10 +147,12 @@ class NeewerProtocol(asyncio.DatagramProtocol):
 
     def unregister_light(self, host: str) -> None:
         """Remove a light from session tracking."""
-        self._sessions.pop(host, None)
+        if self._sessions.pop(host, None) is not None:
+            _LOGGER.info("Unregistered Neewer light session for %s", host)
 
     async def async_connect(self, host: str, client_ip: str) -> None:
         """Perform handshake and wakeup for a light."""
+        _LOGGER.info("Connecting to Neewer light at %s (client IP %s)", host, client_ip)
         session = self.register_light(host, client_ip)
         handshake = build_handshake(client_ip)
         for _ in range(HANDSHAKE_REPEAT):
@@ -158,7 +163,7 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         await asyncio.sleep(1.5)
         session.connected = True
         session.last_handshake = asyncio.get_running_loop().time()
-        _LOGGER.debug("Connected to Neewer light at %s", host)
+        _LOGGER.info("Connected to Neewer light at %s", host)
 
     async def async_ensure_connected(self, host: str) -> _LightSession:
         """Ensure session exists and is connected."""
@@ -193,6 +198,7 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         if self.transport is None:
             raise RuntimeError("UDP transport is not ready")
         self.transport.sendto(data, (host, DEFAULT_PORT))
+        _LOGGER.debug("Sent %d bytes to %s:%d", len(data), host, DEFAULT_PORT)
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats and re-handshake stale sessions."""
@@ -244,6 +250,7 @@ async def async_probe_light(
     Uses an ephemeral UDP port so many probes can run concurrently during discovery.
     Returns True if a plausible Neewer response is received.
     """
+    _LOGGER.debug("Probing %s with client IP %s (timeout %.1fs)", host, client_ip, timeout)
     loop = asyncio.get_running_loop()
     response_future: asyncio.Future[bytes] = loop.create_future()
 
@@ -272,9 +279,13 @@ async def async_probe_light(
         await asyncio.sleep(0.5)
         transport.sendto(HEARTBEAT_PACKET, (host, DEFAULT_PORT))
         try:
-            await asyncio.wait_for(response_future, timeout=timeout)
+            response = await asyncio.wait_for(response_future, timeout=timeout)
+            _LOGGER.debug(
+                "Probe succeeded for %s, response: %s", host, response.hex()
+            )
             return True
         except (asyncio.TimeoutError, asyncio.CancelledError):
+            _LOGGER.debug("Probe timed out for %s", host)
             return False
     finally:
         transport.close()

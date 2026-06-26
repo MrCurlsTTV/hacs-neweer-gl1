@@ -66,6 +66,9 @@ class NeewerDataUpdateCoordinator(DataUpdateCoordinator[NeewerLightState]):
     async def async_connect(self) -> None:
         """Establish UDP session with the light."""
         client_ip = await self._async_resolve_client_ip()
+        _LOGGER.info(
+            "Setting up light %s using client IP %s", self.host, client_ip
+        )
         await self.protocol.async_connect(self.host, client_ip)
 
     async def _async_resolve_client_ip(self) -> str:
@@ -75,6 +78,10 @@ class NeewerDataUpdateCoordinator(DataUpdateCoordinator[NeewerLightState]):
         networks = await async_get_local_networks(self.hass)
         client_ip = client_ip_for_host(self.host, networks)
         if client_ip is None:
+            _LOGGER.error(
+                "Cannot determine client IP for light %s on host networks",
+                self.host,
+            )
             raise RuntimeError(f"Cannot determine client IP for light {self.host}")
         return client_ip
 
@@ -100,11 +107,18 @@ class NeewerDataUpdateCoordinator(DataUpdateCoordinator[NeewerLightState]):
         self._state.is_on = True
         self._state.brightness = protocol_brightness_to_ha(bri)
         self._state.color_temp_kelvin = protocol_to_kelvin(temp)
+        _LOGGER.info(
+            "Turned on %s (brightness=%d, color_temp=%dK)",
+            self.host,
+            self._state.brightness,
+            self._state.color_temp_kelvin,
+        )
         self.async_update_listeners()
 
     async def async_turn_off(self) -> None:
         """Turn the light off."""
         await self.protocol.async_power_off(self.host)
+        _LOGGER.info("Turned off %s", self.host)
         self._state.is_on = False
         self.async_update_listeners()
 
@@ -141,10 +155,12 @@ class NeewerHub:
 
     async def async_setup(self) -> None:
         """Initialize shared UDP transport."""
+        _LOGGER.info("Starting shared Neewer UDP hub")
         await self.protocol.async_setup()
 
     async def async_shutdown(self) -> None:
         """Close shared UDP transport."""
+        _LOGGER.info("Shutting down shared Neewer UDP hub")
         await self.protocol.async_close()
 
     def get_coordinator(self, entry: ConfigEntry) -> NeewerDataUpdateCoordinator | None:
@@ -153,6 +169,7 @@ class NeewerHub:
 
     async def async_register_entry(self, entry: ConfigEntry) -> NeewerDataUpdateCoordinator:
         """Create and connect a coordinator for a config entry."""
+        _LOGGER.info("Registering Neewer light %s", entry.data["host"])
         coordinator = NeewerDataUpdateCoordinator(self.hass, entry, self.protocol)
         await coordinator.async_connect()
         await coordinator.async_refresh()
@@ -161,5 +178,6 @@ class NeewerHub:
 
     async def async_unregister_entry(self, entry: ConfigEntry) -> None:
         """Remove coordinator and protocol session for an entry."""
+        _LOGGER.info("Unregistering Neewer light %s", entry.data["host"])
         self.coordinators.pop(entry.entry_id, None)
         self.protocol.unregister_light(entry.data["host"])

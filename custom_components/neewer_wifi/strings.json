@@ -7,8 +7,7 @@
     },
     "error": {
       "cannot_connect": "Failed to connect to the light. Ensure it is on WiFi and not controlled by another app.",
-      "cannot_determine_client_ip": "Could not determine the Home Assistant host IP for the light's subnet. Enter the client IP manually.",
-      "invalid_client_ip": "Invalid client IP address",
+      "cannot_determine_client_ip": "Home Assistant is not on the same subnet as the light. Ensure HA has a network adapter on that subnet.",
       "invalid_host": "Invalid IP address",
       "invalid_subnet": "Invalid subnet. Use CIDR notation such as 192.168.103.0/24",
       "no_devices_found": "No Neewer WiFi lights were discovered. Enter a subnet below or try manual setup.",
@@ -24,29 +23,16 @@
       },
       "discover": {
         "title": "Discover Neewer WiFi lights",
-        "description": "Scanning may take up to 30 seconds on large networks. If nothing is found, enter a subnet to scan (for example 192.168.103.0/24) and optionally the Home Assistant IP on that subnet.",
+        "description": "Scanning may take up to 30 seconds on large networks. If nothing is found, enter a subnet to scan (for example 192.168.103.0/24).",
         "data": {
           "devices": "Lights",
-          "subnet": "Subnet to scan",
-          "client_ip": "Home Assistant IP on that subnet (optional)"
+          "subnet": "Subnet to scan"
         }
       },
       "manual": {
         "title": "Manual setup",
-        "description": "Enter the light IP address. If the light is on a different subnet than Home Assistant, also enter the Home Assistant IP that can reach it.",
         "data": {
-          "host": "Light IP address",
-          "client_ip": "Home Assistant IP on that subnet (optional)"
-        }
-      }
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Neewer WiFi options",
-        "data": {
-          "client_ip": "Client IP override (optional)"
+          "host": "Light IP address"
         }
       }
     }

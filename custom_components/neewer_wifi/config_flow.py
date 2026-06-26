@@ -10,7 +10,7 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
@@ -31,7 +31,6 @@ _LOGGER = logging.getLogger(__name__)
 STEP_MANUAL_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HOST): str,
-        vol.Optional(CONF_CLIENT_IP): str,
     }
 )
 
@@ -44,26 +43,7 @@ async def _async_get_configured_hosts(hass: HomeAssistant) -> set[str]:
     }
 
 
-def _normalize_client_ip(client_ip: str | None) -> str | None:
-    """Return a validated client IP or None when empty."""
-    if not client_ip:
-        return None
-    client_ip = client_ip.strip()
-    if not client_ip:
-        return None
-    try:
-        ipaddress.ip_address(client_ip)
-    except ValueError as err:
-        raise InvalidClientIp from err
-    return client_ip
-
-
-async def _async_validate_host(
-    hass: HomeAssistant,
-    host: str,
-    *,
-    client_ip: str | None = None,
-) -> DiscoveredDevice:
+async def _async_validate_host(hass: HomeAssistant, host: str) -> DiscoveredDevice:
     """Probe a host and return device info when valid."""
     host = host.strip()
     try:
@@ -71,21 +51,27 @@ async def _async_validate_host(
     except ValueError as err:
         raise InvalidHost from err
 
-    client_ip = _normalize_client_ip(client_ip)
+    networks = await async_get_local_networks(hass)
+    client_ip = client_ip_for_host(host, networks)
     if client_ip is None:
-        networks = await async_get_local_networks(hass)
-        client_ip = client_ip_for_host(host, networks)
-    if client_ip is None:
+        _LOGGER.warning(
+            "No local network adapter found for light %s (adapters: %s)",
+            host,
+            [f"{addr}/{net.prefixlen}" for addr, net in networks],
+        )
         raise CannotDetermineClientIp
 
+    _LOGGER.info("Probing light at %s using client IP %s", host, client_ip)
     try:
         found = await async_probe_light(host, client_ip)
     except OSError as err:
-        _LOGGER.debug("Probe failed for %s: %s", host, err)
+        _LOGGER.warning("Probe failed for %s: %s", host, err)
         raise CannotConnect from err
     if not found:
+        _LOGGER.warning("No Neewer response from %s", host)
         raise CannotConnect
 
+    _LOGGER.info("Validated Neewer light at %s (client IP %s)", host, client_ip)
     unique_id = f"neewer_wifi_{host.replace('.', '_')}"
     return DiscoveredDevice(
         host=host,
@@ -129,7 +115,6 @@ def _subnet_retry_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Optional(CONF_SUBNET): str,
-            vol.Optional(CONF_CLIENT_IP): str,
         }
     )
 
@@ -160,6 +145,14 @@ class NeewerWifiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         client_ip_override: str | None = None,
     ) -> FlowResult:
         """Scan for lights and show the picker or subnet retry form."""
+        if scan_networks:
+            _LOGGER.info(
+                "Starting Neewer discovery on subnet(s): %s",
+                ", ".join(str(network) for network in scan_networks),
+            )
+        else:
+            _LOGGER.info("Starting Neewer discovery on local adapters")
+
         self._discovered = {}
         discovered = await async_discover_neewer_lights(
             self.hass,
@@ -171,6 +164,7 @@ class NeewerWifiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._discovered[device.host] = device
 
         if not self._discovered:
+            _LOGGER.info("Neewer discovery finished with no lights found")
             return self.async_show_form(
                 step_id="discover",
                 data_schema=_subnet_retry_schema(),
@@ -178,6 +172,11 @@ class NeewerWifiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 description_placeholders={},
             )
 
+        _LOGGER.info(
+            "Neewer discovery found %d light(s): %s",
+            len(self._discovered),
+            ", ".join(self._discovered),
+        )
         return self.async_show_form(
             step_id="discover",
             data_schema=_device_picker_schema(self._discovered),
@@ -202,28 +201,21 @@ class NeewerWifiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             network = parse_ipv4_network(subnet)
         except ValueError:
+            _LOGGER.warning("Invalid subnet entered during discovery: %s", subnet)
             return self.async_show_form(
                 step_id="discover",
                 data_schema=_subnet_retry_schema(),
                 errors={"base": "invalid_subnet"},
             )
 
-        try:
-            client_ip_override = _normalize_client_ip(
-                user_input.get(CONF_CLIENT_IP)
-            )
-        except InvalidClientIp:
-            return self.async_show_form(
-                step_id="discover",
-                data_schema=_subnet_retry_schema(),
-                errors={"base": "invalid_client_ip"},
-            )
-
+        local_networks = await async_get_local_networks(self.hass)
+        client_ip_override = client_ip_for_network(network, local_networks)
         if client_ip_override is None:
-            local_networks = await async_get_local_networks(self.hass)
-            client_ip_override = client_ip_for_network(network, local_networks)
-
-        if client_ip_override is None:
+            _LOGGER.warning(
+                "No local adapter found for subnet %s (adapters: %s)",
+                network,
+                [f"{addr}/{net.prefixlen}" for addr, net in local_networks],
+            )
             return self.async_show_form(
                 step_id="discover",
                 data_schema=_subnet_retry_schema(),
@@ -258,6 +250,11 @@ class NeewerWifiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not devices:
             return self.async_abort(reason="no_devices_found")
 
+        _LOGGER.info(
+            "Adding %d Neewer light(s) from discovery: %s",
+            len(devices),
+            ", ".join(device.host for device in devices),
+        )
         return await self._async_create_device_entries(devices)
 
     async def async_step_manual(
@@ -272,26 +269,15 @@ class NeewerWifiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_host"
             else:
                 try:
-                    client_ip = _normalize_client_ip(
-                        user_input.get(CONF_CLIENT_IP)
-                    )
-                except InvalidClientIp:
-                    errors["base"] = "invalid_client_ip"
+                    device = await _async_validate_host(self.hass, host)
+                except InvalidHost:
+                    errors["base"] = "invalid_host"
+                except CannotDetermineClientIp:
+                    errors["base"] = "cannot_determine_client_ip"
+                except CannotConnect:
+                    errors["base"] = "cannot_connect"
                 else:
-                    try:
-                        device = await _async_validate_host(
-                            self.hass,
-                            host,
-                            client_ip=client_ip,
-                        )
-                    except InvalidHost:
-                        errors["base"] = "invalid_host"
-                    except CannotDetermineClientIp:
-                        errors["base"] = "cannot_determine_client_ip"
-                    except CannotConnect:
-                        errors["base"] = "cannot_connect"
-                    else:
-                        return await self._async_create_device_entries([device])
+                    return await self._async_create_device_entries([device])
 
         return self.async_show_form(
             step_id="manual",
@@ -329,41 +315,6 @@ class NeewerWifiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data=_entry_data(first),
         )
 
-    @staticmethod
-    @callback
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> NeewerWifiOptionsFlow:
-        """Return the options flow handler."""
-        return NeewerWifiOptionsFlow(config_entry)
-
-
-class NeewerWifiOptionsFlow(config_entries.OptionsFlow):
-    """Handle Neewer WiFi options."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
-
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Manage options."""
-        if user_input is not None:
-            client_ip = user_input.get(CONF_CLIENT_IP, "").strip()
-            data = self.config_entry.data.copy()
-            if client_ip:
-                data[CONF_CLIENT_IP] = client_ip
-            self.hass.config_entries.async_update_entry(self.config_entry, data=data)
-            return self.async_create_entry(title="", data={})
-
-        current_client_ip = self.config_entry.data.get(CONF_CLIENT_IP, "")
-        schema = vol.Schema(
-            {
-                vol.Optional(CONF_CLIENT_IP, default=current_client_ip): str,
-            }
-        )
-        return self.async_show_form(step_id="init", data_schema=schema)
-
 
 class CannotConnect(HomeAssistantError):
     """Unable to connect to the device."""
@@ -371,10 +322,6 @@ class CannotConnect(HomeAssistantError):
 
 class InvalidHost(HomeAssistantError):
     """Invalid host address."""
-
-
-class InvalidClientIp(HomeAssistantError):
-    """Invalid client IP address."""
 
 
 class CannotDetermineClientIp(HomeAssistantError):
