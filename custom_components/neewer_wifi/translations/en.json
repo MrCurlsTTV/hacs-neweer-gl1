@@ -1,0 +1,48 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Device is already configured",
+      "devices_added": "Selected devices were added",
+      "no_devices_found": "No Neewer WiFi lights were found on your network"
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the light. Ensure it is on WiFi and not controlled by another app.",
+      "cannot_determine_client_ip": "Could not determine the Home Assistant host IP for the light's subnet",
+      "invalid_host": "Invalid IP address",
+      "no_devices_found": "No Neewer WiFi lights were discovered. Try manual setup with the light IP.",
+      "no_devices_selected": "Select at least one light"
+    },
+    "step": {
+      "user": {
+        "menu_options": {
+          "discover": "Discover lights on local network",
+          "manual": "Enter light IP manually"
+        },
+        "title": "Neewer WiFi"
+      },
+      "discover": {
+        "title": "Discover Neewer WiFi lights",
+        "description": "Scanning may take up to 30 seconds on large networks.",
+        "data": {
+          "devices": "Lights"
+        }
+      },
+      "manual": {
+        "title": "Manual setup",
+        "data": {
+          "host": "Light IP address"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Neewer WiFi options",
+        "data": {
+          "client_ip": "Client IP override (optional)"
+        }
+      }
+    }
+  }
+}

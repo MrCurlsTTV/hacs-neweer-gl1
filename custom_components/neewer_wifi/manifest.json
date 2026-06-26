@@ -1,0 +1,14 @@
+{
+  "domain": "neewer_wifi",
+  "name": "Neewer WiFi",
+  "codeowners": ["@mrcurls"],
+  "config_flow": true,
+  "documentation": "https://github.com/mrcurls/HaNeweerWifi",
+  "integration_type": "device",
+  "homeassistant": "2024.1.0",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/mrcurls/HaNeweerWifi/issues",
+  "requirements": [],
+  "version": "1.0.0",
+  "quality_scale": "bronze"
+}
