@@ -287,7 +287,7 @@ async def async_probe_light(
                 "Probe succeeded for %s, response: %s", host, response.hex()
             )
             return True
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             _LOGGER.debug("Probe timed out for %s", host)
             return False
     finally:

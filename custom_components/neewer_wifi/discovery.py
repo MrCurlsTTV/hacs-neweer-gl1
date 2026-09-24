@@ -16,8 +16,8 @@ from .const import (
     DISCOVERY_CONCURRENCY,
     MAX_SCAN_DURATION,
     MIN_ROUTE_SCAN_PREFIXLEN,
-    PROC_NET_ROUTE,
     PROBE_TIMEOUT,
+    PROC_NET_ROUTE,
     SKIP_ROUTE_IFACE_PREFIXES,
 )
 from .protocol import async_probe_light

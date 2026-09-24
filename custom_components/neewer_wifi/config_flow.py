@@ -7,7 +7,6 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
@@ -17,12 +16,12 @@ from homeassistant.helpers import selector
 
 from .const import CONF_CLIENT_IP, CONF_SUBNET, DOMAIN
 from .discovery import (
+    DiscoveredDevice,
     async_discover_neewer_lights,
     async_get_local_networks,
     async_resolve_client_ip,
     client_ip_for_host,
     client_ip_for_network,
-    DiscoveredDevice,
     parse_ipv4_network,
 )
 from .protocol import async_probe_light
