@@ -3,8 +3,8 @@
 import ipaddress
 
 from custom_components.neewer_wifi.discovery import (
-    _hosts_for_network,
     _hex_be_word_to_ipv4,
+    _hosts_for_network,
     _is_private_ipv4,
     _prefixlen_from_route_mask,
     client_ip_for_host,
