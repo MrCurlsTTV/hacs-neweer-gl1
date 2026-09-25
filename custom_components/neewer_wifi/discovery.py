@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -334,6 +335,22 @@ async def async_get_discovery_targets(hass: HomeAssistant) -> list[DiscoveryTarg
     return targets
 
 
+def _client_ip_via_kernel_route(host: str) -> str | None:
+    """Ask the kernel what source IP it would use to reach host.
+
+    Covers hosts reachable only via the default gateway (e.g. a different
+    VLAN routed, but not NAT'd, by the router) that don't show up as their
+    own entry in the adapter list or /proc/net/route. A UDP "connect" never
+    sends a packet; it only resolves routing and binds a local address.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect((host, 1))
+            return sock.getsockname()[0]
+    except OSError:
+        return None
+
+
 async def async_resolve_client_ip(hass: HomeAssistant, host: str) -> str | None:
     """Resolve the client IP to embed in the handshake for a target host."""
     try:
@@ -344,7 +361,8 @@ async def async_resolve_client_ip(hass: HomeAssistant, host: str) -> str | None:
     for target_info in await async_get_discovery_targets(hass):
         if target in target_info.network:
             return target_info.client_ip
-    return None
+
+    return await hass.async_add_executor_job(_client_ip_via_kernel_route, host)
 
 
 def client_ip_for_host(
