@@ -93,3 +93,124 @@ def test_client_ip_falls_back_to_stored(monkeypatch) -> None:
         NeewerDataUpdateCoordinator._async_resolve_client_ip(_coordinator("192.168.16.51"))
     )
     assert result == "192.168.16.51"
+
+
+HOST = "192.168.16.101"
+
+
+def _wired_protocol(monkeypatch, *, light_acks: bool) -> NeewerProtocol:
+    """A protocol whose fake transport acks heartbeats only if light_acks."""
+    import custom_components.neewer_wifi.protocol as protocol_module
+
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(_delay):
+        await real_sleep(0)
+
+    monkeypatch.setattr(protocol_module.asyncio, "sleep", fast_sleep)
+    monkeypatch.setattr(protocol_module, "HANDSHAKE_ACK_TIMEOUT", 0.05)
+
+    protocol = _protocol()
+    transport = MagicMock()
+
+    def sendto(data, addr):
+        if light_acks and data == protocol_module.HEARTBEAT_PACKET:
+            protocol.datagram_received(protocol_module.HEARTBEAT_ACK, addr)
+
+    transport.sendto.side_effect = sendto
+    protocol.transport = transport
+    return protocol
+
+
+def test_connect_without_ack_fails_and_light_is_unavailable(monkeypatch) -> None:
+    """A light that never answers must not look connected."""
+
+    async def scenario():
+        protocol = _wired_protocol(monkeypatch, light_acks=False)
+        with pytest.raises(TimeoutError):
+            await protocol.async_connect(HOST, "192.168.16.51")
+        assert not protocol.is_available(HOST)
+        with pytest.raises(HomeAssistantError):
+            await protocol.async_power_on(HOST)
+
+    asyncio.run(scenario())
+
+
+def test_connect_with_ack_makes_light_available(monkeypatch) -> None:
+    """An acked handshake leaves the light connected and available."""
+
+    async def scenario():
+        protocol = _wired_protocol(monkeypatch, light_acks=True)
+        await protocol.async_connect(HOST, "192.168.16.51")
+        assert protocol.is_available(HOST)
+        await protocol.async_power_on(HOST)
+
+    asyncio.run(scenario())
+
+
+def test_commands_rejected_once_heartbeat_acks_stop(monkeypatch) -> None:
+    """A connected light that stops answering is unavailable and refuses commands."""
+
+    async def scenario():
+        protocol = _wired_protocol(monkeypatch, light_acks=True)
+        await protocol.async_connect(HOST, "192.168.16.51")
+        protocol._sessions[HOST].last_heartbeat_ack = -1e9
+        assert not protocol.is_available(HOST)
+        with pytest.raises(HomeAssistantError):
+            await protocol.async_set_brightness_temp(HOST, 50, 50)
+
+    asyncio.run(scenario())
+
+
+def test_availability_listener_fires_only_on_change(monkeypatch) -> None:
+    """Listeners hear about a light going unavailable once, not on every tick."""
+
+    async def scenario():
+        protocol = _wired_protocol(monkeypatch, light_acks=True)
+        calls = []
+        protocol.add_availability_listener(HOST, lambda: calls.append(1))
+        await protocol.async_connect(HOST, "192.168.16.51")
+        protocol._notify_availability()
+        protocol._notify_availability()
+        assert len(calls) == 1
+        protocol._sessions[HOST].last_heartbeat_ack = -1e9
+        protocol._notify_availability()
+        protocol._notify_availability()
+        assert len(calls) == 2
+
+    asyncio.run(scenario())
+
+
+def _bare_coordinator(protocol):
+    from custom_components.neewer_wifi.coordinator import NeewerLightState
+
+    coordinator = object.__new__(NeewerDataUpdateCoordinator)
+    coordinator.protocol = protocol
+    coordinator.host = HOST
+    coordinator._state = NeewerLightState()
+    coordinator.async_update_listeners = MagicMock()
+    return coordinator
+
+
+def test_failed_command_does_not_change_light_state() -> None:
+    """If the light cannot be reached, HA's state must not claim it changed."""
+    protocol = MagicMock()
+    error = HomeAssistantError("not responding")
+    protocol.async_power_on = AsyncMock(side_effect=error)
+    protocol.async_power_off = AsyncMock(side_effect=error)
+    protocol.async_set_brightness_temp = AsyncMock(side_effect=error)
+    coordinator = _bare_coordinator(protocol)
+
+    with pytest.raises(HomeAssistantError):
+        asyncio.run(coordinator.async_turn_on(brightness=200))
+    assert coordinator._state.is_on is False
+    assert coordinator._state.brightness == _bare_coordinator(protocol)._state.brightness
+
+    coordinator._state.is_on = True
+    with pytest.raises(HomeAssistantError):
+        asyncio.run(coordinator.async_turn_off())
+    assert coordinator._state.is_on is True
+
+    with pytest.raises(HomeAssistantError):
+        asyncio.run(coordinator.async_set_brightness(50))
+    coordinator.async_update_listeners.assert_not_called()

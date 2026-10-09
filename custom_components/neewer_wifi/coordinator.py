@@ -54,6 +54,12 @@ class NeewerDataUpdateCoordinator(DataUpdateCoordinator[NeewerLightState]):
             name=f"{DOMAIN}_{self.host}",
             update_interval=None,
         )
+        protocol.add_availability_listener(self.host, self.async_update_listeners)
+
+    @property
+    def available(self) -> bool:
+        """Return True while the light is reachable."""
+        return self.protocol.is_available(self.host)
 
     async def _async_update_data(self) -> NeewerLightState:
         """Return locally tracked state (no device polling)."""

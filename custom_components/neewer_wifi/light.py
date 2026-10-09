@@ -71,6 +71,11 @@ class NeewerWifiLight(CoordinatorEntity[NeewerDataUpdateCoordinator], LightEntit
         }
 
     @property
+    def available(self) -> bool:
+        """Return True while the light is reachable."""
+        return self.coordinator.available
+
+    @property
     def is_on(self) -> bool:
         """Return true if the light is on."""
         return self.coordinator.state.is_on
