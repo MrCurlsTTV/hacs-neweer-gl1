@@ -352,17 +352,26 @@ def _client_ip_via_kernel_route(host: str) -> str | None:
 
 
 async def async_resolve_client_ip(hass: HomeAssistant, host: str) -> str | None:
-    """Resolve the client IP to embed in the handshake for a target host."""
+    """Resolve the client IP to embed in the handshake for a target host.
+
+    The light ignores handshakes whose embedded IP differs from the packet's real
+    source IP, so the kernel's chosen source address wins over adapter/route
+    heuristics (which can't see e.g. a `src=` hint on a host route).
+    """
     try:
         target = ipaddress.ip_address(host)
     except ValueError:
         return None
 
+    kernel_ip = await hass.async_add_executor_job(_client_ip_via_kernel_route, host)
+    if kernel_ip is not None:
+        return kernel_ip
+
     for target_info in await async_get_discovery_targets(hass):
         if target in target_info.network:
             return target_info.client_ip
 
-    return await hass.async_add_executor_job(_client_ip_via_kernel_route, host)
+    return None
 
 
 def client_ip_for_host(
