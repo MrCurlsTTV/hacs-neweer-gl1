@@ -283,6 +283,64 @@ async def async_get_local_networks(
     return networks
 
 
+def _get_all_interface_networks() -> list[tuple[str, ipaddress.IPv4Network]]:
+    """Return (client_ip, network) for every private IPv4 interface address.
+
+    Unlike the adapter list, this ignores which adapters Home Assistant has
+    enabled and which interface names are normally skipped, so it also covers
+    interfaces that only show up on the host itself (e.g. a second NIC or a
+    VLAN interface).
+    """
+    try:
+        import ifaddr
+    except ImportError:
+        _LOGGER.debug("ifaddr is not available for interface enumeration")
+        return []
+
+    pairs: list[tuple[str, ipaddress.IPv4Network]] = []
+    for adapter in ifaddr.get_adapters():
+        if adapter.name == "lo":
+            continue
+        for ip_config in adapter.ips:
+            address = ip_config.ip
+            if ip_config.is_IPv6 or isinstance(address, tuple):
+                continue
+            if not _is_private_ipv4(address):
+                continue
+            try:
+                network = ipaddress.IPv4Network(
+                    (address, ip_config.network_prefix), strict=False
+                )
+            except ValueError:
+                continue
+            if _is_scannable_private_network(network):
+                pairs.append((address, network))
+    return pairs
+
+
+async def async_get_fallback_targets(
+    hass: HomeAssistant,
+    already_scanned: set[str],
+) -> list[DiscoveryTarget]:
+    """Return subnets from every interface that the normal scan did not cover.
+
+    Smaller subnets come first so a large one cannot use up the scan time
+    before the small ones are tried.
+    """
+    pairs = await hass.async_add_executor_job(_get_all_interface_networks)
+    targets: list[DiscoveryTarget] = []
+    seen = set(already_scanned)
+    for client_ip, network in sorted(pairs, key=lambda pair: -pair[1].prefixlen):
+        key = str(network)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(
+            DiscoveryTarget(network=network, client_ip=client_ip, source="interface")
+        )
+    return targets
+
+
 async def async_get_discovery_targets(hass: HomeAssistant) -> list[DiscoveryTarget]:
     """Return subnets to scan from adapters plus routable private networks."""
     adapters = await async_get_adapters(hass)
@@ -389,51 +447,15 @@ def client_ip_for_host(
     return None
 
 
-async def async_discover_neewer_lights(
-    hass: HomeAssistant,
+async def _async_scan_hosts(
+    candidate_hosts: list[str],
     *,
-    hosts: list[str] | None = None,
-    scan_networks: list[ipaddress.IPv4Network] | None = None,
-    client_ip_override: str | None = None,
-    exclude_hosts: set[str] | None = None,
-) -> list[DiscoveredDevice]:
-    """
-    Discover Neewer WiFi lights by UDP handshake probing on port 5052.
-
-    When hosts is omitted, scans private subnets from adapters and routes.
-    scan_networks limits discovery to specific subnets.
-    """
-    exclude = exclude_hosts or set()
-    local_networks = await async_get_local_networks(hass)
-    host_client_ips: dict[str, str] = {}
-
-    if hosts is not None:
-        candidate_hosts = list(hosts)
-    elif scan_networks is not None:
-        candidate_hosts = []
-        for network in scan_networks:
-            candidate_hosts.extend(_hosts_for_network(network))
-    else:
-        candidate_hosts = []
-        for target in await async_get_discovery_targets(hass):
-            for host in _hosts_for_network(target.network):
-                host_client_ips.setdefault(host, target.client_ip)
-
-    candidate_hosts = [
-        host
-        for host in dict.fromkeys(candidate_hosts or list(host_client_ips))
-        if _is_private_ipv4(host) and host not in exclude
-    ]
-
-    if not candidate_hosts:
-        _LOGGER.info("No candidate hosts to scan for Neewer lights")
-        return []
-
-    scan_label = (
-        ", ".join(str(network) for network in scan_networks)
-        if scan_networks
-        else "adapters and routes"
-    )
+    host_client_ips: dict[str, str],
+    local_networks: list[tuple[str, ipaddress.IPv4Network]],
+    client_ip_override: str | None,
+    scan_label: str,
+) -> dict[str, DiscoveredDevice]:
+    """Probe candidate hosts and return the lights that answered."""
     _LOGGER.info(
         "Starting Neewer discovery on %s (%d hosts, client IP %s)",
         scan_label,
@@ -446,10 +468,12 @@ async def async_discover_neewer_lights(
     scan_started = asyncio.get_running_loop().time()
     skipped_no_client_ip = 0
     probe_errors = 0
+    timed_out = False
 
     async def _probe(host: str) -> None:
-        nonlocal skipped_no_client_ip, probe_errors
+        nonlocal skipped_no_client_ip, probe_errors, timed_out
         if asyncio.get_running_loop().time() - scan_started > MAX_SCAN_DURATION:
+            timed_out = True
             return
         client_ip = (
             client_ip_override
@@ -486,11 +510,97 @@ async def async_discover_neewer_lights(
 
     elapsed = asyncio.get_running_loop().time() - scan_started
     _LOGGER.info(
-        "Neewer discovery finished in %.1fs: %d found, %d skipped (no client IP), %d probe errors",
+        "Neewer discovery finished in %.1fs: %d found, %d skipped (no client IP), "
+        "%d probe errors%s",
         elapsed,
         len(discovered),
         skipped_no_client_ip,
         probe_errors,
+        ", scan time limit reached" if timed_out else "",
     )
+    return discovered
+
+
+async def async_discover_neewer_lights(
+    hass: HomeAssistant,
+    *,
+    hosts: list[str] | None = None,
+    scan_networks: list[ipaddress.IPv4Network] | None = None,
+    client_ip_override: str | None = None,
+    exclude_hosts: set[str] | None = None,
+) -> list[DiscoveredDevice]:
+    """
+    Discover Neewer WiFi lights by UDP handshake probing on port 5052.
+
+    When hosts is omitted, scans private subnets from adapters and routes. If that
+    finds nothing (including when the scan hits its time limit), every other
+    interface on the host is scanned as a fallback.
+    scan_networks limits discovery to specific subnets and disables the fallback.
+    """
+    exclude = exclude_hosts or set()
+    local_networks = await async_get_local_networks(hass)
+    host_client_ips: dict[str, str] = {}
+    scanned_networks: set[str] = set()
+    explicit_scope = hosts is not None or scan_networks is not None
+
+    if hosts is not None:
+        candidate_hosts = list(hosts)
+    elif scan_networks is not None:
+        candidate_hosts = []
+        for network in scan_networks:
+            candidate_hosts.extend(_hosts_for_network(network))
+    else:
+        candidate_hosts = []
+        for target in await async_get_discovery_targets(hass):
+            scanned_networks.add(str(target.network))
+            for host in _hosts_for_network(target.network):
+                host_client_ips.setdefault(host, target.client_ip)
+
+    def _filter(candidates: list[str]) -> list[str]:
+        return [
+            host
+            for host in dict.fromkeys(candidates)
+            if _is_private_ipv4(host) and host not in exclude
+        ]
+
+    candidate_hosts = _filter(candidate_hosts or list(host_client_ips))
+    discovered: dict[str, DiscoveredDevice] = {}
+
+    if candidate_hosts:
+        discovered = await _async_scan_hosts(
+            candidate_hosts,
+            host_client_ips=host_client_ips,
+            local_networks=local_networks,
+            client_ip_override=client_ip_override,
+            scan_label=(
+                ", ".join(str(network) for network in scan_networks)
+                if scan_networks
+                else "adapters and routes"
+            ),
+        )
+    else:
+        _LOGGER.info("No candidate hosts to scan for Neewer lights")
+
+    if not discovered and not explicit_scope:
+        fallback_targets = await async_get_fallback_targets(hass, scanned_networks)
+        fallback_ips: dict[str, str] = {}
+        for target in fallback_targets:
+            for host in _hosts_for_network(target.network):
+                fallback_ips.setdefault(host, target.client_ip)
+        fallback_hosts = _filter(list(fallback_ips))
+        if fallback_hosts:
+            _LOGGER.info(
+                "No lights found; scanning all other interfaces: %s",
+                ", ".join(
+                    f"{target.network} via {target.client_ip}" for target in fallback_targets
+                ),
+            )
+            discovered = await _async_scan_hosts(
+                fallback_hosts,
+                host_client_ips=fallback_ips,
+                local_networks=local_networks,
+                client_ip_override=None,
+                scan_label="all interfaces (fallback)",
+            )
 
     return sorted(discovered.values(), key=lambda device: ipaddress.ip_address(device.host))
