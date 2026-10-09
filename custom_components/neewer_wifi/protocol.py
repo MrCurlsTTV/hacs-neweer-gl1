@@ -7,6 +7,8 @@ import logging
 import socket
 from typing import TYPE_CHECKING
 
+from homeassistant.exceptions import HomeAssistantError
+
 from .const import (
     DEFAULT_COMMAND_DELAY,
     DEFAULT_PORT,
@@ -21,6 +23,7 @@ from .const import (
     MIN_COLOR_TEMP_PROTOCOL,
     POWER_OFF_PACKET,
     POWER_ON_PACKET,
+    RECONNECT_RETRY_INTERVAL,
     REHANDSHAKE_INTERVAL,
     WAKEUP_PACKET,
 )
@@ -174,7 +177,9 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         """Ensure session exists and is connected."""
         session = self._sessions.get(host)
         if session is None or not session.connected:
-            raise RuntimeError(f"No registered session for {host}")
+            raise HomeAssistantError(
+                f"Neewer light {host} is not connected yet, try again in a few seconds"
+            )
         return session
 
     async def async_power_on(self, host: str) -> None:
@@ -205,6 +210,14 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         self.transport.sendto(data, (host, DEFAULT_PORT))
         _LOGGER.debug("Sent %d bytes to %s:%d", len(data), host, DEFAULT_PORT)
 
+    async def _async_reconnect(self, host: str, session: _LightSession) -> None:
+        """Re-handshake a light, keeping the heartbeat loop alive on failure."""
+        session.last_connect_attempt = asyncio.get_running_loop().time()
+        try:
+            await self.async_connect(host, session.client_ip)
+        except Exception as err:  # noqa: BLE001 - keep heartbeat loop alive
+            _LOGGER.warning("Re-handshake failed for %s: %s", host, err)
+
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats and reconnect stale or unresponsive sessions."""
         heartbeat_timeout = HEARTBEAT_INTERVAL * HEARTBEAT_MISS_THRESHOLD
@@ -213,6 +226,10 @@ class NeewerProtocol(asyncio.DatagramProtocol):
                 now = asyncio.get_running_loop().time()
                 for host, session in list(self._sessions.items()):
                     if not session.connected:
+                        # A dropped session (failed heartbeat send or reconnect)
+                        # would otherwise stay dead forever, so retry it.
+                        if now - session.last_connect_attempt >= RECONNECT_RETRY_INTERVAL:
+                            await self._async_reconnect(host, session)
                         continue
                     stale_handshake = now - session.last_handshake >= REHANDSHAKE_INTERVAL
                     unresponsive = now - session.last_heartbeat_ack >= heartbeat_timeout
@@ -226,12 +243,7 @@ class NeewerProtocol(asyncio.DatagramProtocol):
                         else:
                             _LOGGER.debug("Periodic re-handshake for %s", host)
                         session.connected = False
-                        try:
-                            await self.async_connect(host, session.client_ip)
-                        except Exception as err:  # noqa: BLE001 - keep heartbeat loop alive
-                            _LOGGER.warning(
-                                "Re-handshake failed for %s: %s", host, err
-                            )
+                        await self._async_reconnect(host, session)
                         continue
                     try:
                         await self._send(host, HEARTBEAT_PACKET)
@@ -251,6 +263,7 @@ class _LightSession:
         self.client_ip = client_ip
         self.connected = False
         self.last_handshake = 0.0
+        self.last_connect_attempt = 0.0
         self.last_heartbeat_ack = 0.0
         self.last_response: bytes | None = None
 

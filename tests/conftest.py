@@ -28,6 +28,21 @@ class _HomeAssistantError(Exception):
     """Stand-in so integration exceptions are real, catchable exception types."""
 
 
+class _DataUpdateCoordinator:
+    """Stand-in base so coordinator methods can be called in tests."""
+
+    def __class_getitem__(cls, _item):
+        return cls
+
+    def __init__(self, *_args, **_kwargs) -> None:
+        pass
+
+
+sys.modules["homeassistant.helpers.update_coordinator"].DataUpdateCoordinator = (
+    _DataUpdateCoordinator
+)
+
+
 class _ConfigFlow:
     """Stand-in base accepting the `domain=` class keyword."""
 
