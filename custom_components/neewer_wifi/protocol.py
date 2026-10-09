@@ -97,22 +97,31 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         self.transport: asyncio.DatagramTransport | None = None
         self._ready = asyncio.Event()
         self._command_lock = asyncio.Lock()
+        self._setup_lock = asyncio.Lock()
         self._sessions: dict[str, _LightSession] = {}
         self._availability_listeners: dict[str, list[Callable[[], None]]] = {}
         self._heartbeat_task: asyncio.Task | None = None
 
     async def async_setup(self) -> None:
-        """Bind the shared UDP socket on port 5052."""
-        loop = self.hass.loop
-        await loop.create_datagram_endpoint(
-            lambda: self,
-            local_addr=("0.0.0.0", DEFAULT_PORT),
-            family=socket.AF_INET,
-            reuse_port=True,
-        )
-        await self._ready.wait()
-        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        _LOGGER.info("UDP socket bound on 0.0.0.0:%d", DEFAULT_PORT)
+        """Bind the shared UDP socket on port 5052.
+
+        Entries are set up in parallel and each calls this when the hub looks
+        empty, so it must bind only once: a second socket and heartbeat task would
+        send every heartbeat twice.
+        """
+        async with self._setup_lock:
+            if self._heartbeat_task is not None:
+                return
+            loop = self.hass.loop
+            await loop.create_datagram_endpoint(
+                lambda: self,
+                local_addr=("0.0.0.0", DEFAULT_PORT),
+                family=socket.AF_INET,
+                reuse_port=True,
+            )
+            await self._ready.wait()
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            _LOGGER.info("UDP socket bound on 0.0.0.0:%d", DEFAULT_PORT)
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         """Store transport when the UDP endpoint is ready."""
@@ -140,8 +149,11 @@ class NeewerProtocol(asyncio.DatagramProtocol):
                 await self._heartbeat_task
             except asyncio.CancelledError:
                 pass
+        self._heartbeat_task = None
         if self.transport is not None:
             self.transport.close()
+            self.transport = None
+            self._ready.clear()
             _LOGGER.info("UDP socket on port %d closed", DEFAULT_PORT)
 
     def register_light(self, host: str, client_ip: str) -> _LightSession:

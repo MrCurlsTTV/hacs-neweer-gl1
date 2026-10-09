@@ -214,3 +214,30 @@ def test_failed_command_does_not_change_light_state() -> None:
     with pytest.raises(HomeAssistantError):
         asyncio.run(coordinator.async_set_brightness(50))
     coordinator.async_update_listeners.assert_not_called()
+
+
+def test_parallel_setup_binds_once_and_starts_one_heartbeat() -> None:
+    """Two entries calling async_setup at once must share one socket and one loop."""
+
+    async def scenario():
+        hass = MagicMock()
+        hass.loop = asyncio.get_running_loop()
+        protocol = NeewerProtocol(hass)
+        binds = []
+
+        async def fake_endpoint(factory, **_kwargs):
+            binds.append(1)
+            await asyncio.sleep(0)
+            protocol.connection_made(MagicMock())
+            return MagicMock(), protocol
+
+        hass.loop.create_datagram_endpoint = fake_endpoint
+        protocol._heartbeat_loop = AsyncMock()
+        await asyncio.gather(protocol.async_setup(), protocol.async_setup())
+        assert len(binds) == 1
+
+        await protocol.async_close()
+        await protocol.async_setup()
+        assert len(binds) == 2
+
+    asyncio.run(scenario())
