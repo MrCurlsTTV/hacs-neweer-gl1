@@ -3,6 +3,7 @@
 import ipaddress
 
 from custom_components.neewer_wifi.discovery import (
+    _client_ip_via_kernel_route,
     _hex_be_word_to_ipv4,
     _hosts_for_network,
     _is_private_ipv4,
@@ -105,6 +106,31 @@ docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0
     assert routes[0].iface == "enp16s0"
     assert str(routes[0].network) == "192.168.103.0/24"
     assert routes[0].gateway == "0.0.0.0"
+
+
+def test_client_ip_via_kernel_route_loopback() -> None:
+    """The kernel-route fallback should resolve a real reachable source IP."""
+    assert _client_ip_via_kernel_route("127.0.0.1") == "127.0.0.1"
+
+
+def test_client_ip_via_kernel_route_unreachable_returns_none(monkeypatch) -> None:
+    """A host the kernel cannot route to should return None, not raise."""
+
+    class _RaisingSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def connect(self, addr):
+            raise OSError("no route to host")
+
+    monkeypatch.setattr(
+        "custom_components.neewer_wifi.discovery.socket.socket",
+        lambda *a, **kw: _RaisingSocket(),
+    )
+    assert _client_ip_via_kernel_route("203.0.113.1") is None
 
 
 def test_parse_proc_net_route_skips_broader_than_sl16() -> None:

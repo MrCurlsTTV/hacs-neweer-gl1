@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import DEFAULT_COMMAND_DELAY, DOMAIN
-from .discovery import async_get_local_networks, async_resolve_client_ip, client_ip_for_host
+from .discovery import async_resolve_client_ip
 from .protocol import (
     NeewerProtocol,
     ha_brightness_to_protocol,
@@ -54,6 +54,12 @@ class NeewerDataUpdateCoordinator(DataUpdateCoordinator[NeewerLightState]):
             name=f"{DOMAIN}_{self.host}",
             update_interval=None,
         )
+        protocol.add_availability_listener(self.host, self.async_update_listeners)
+
+    @property
+    def available(self) -> bool:
+        """Return True while the light is reachable."""
+        return self.protocol.is_available(self.host)
 
     async def _async_update_data(self) -> NeewerLightState:
         """Return locally tracked state (no device polling)."""
@@ -73,19 +79,26 @@ class NeewerDataUpdateCoordinator(DataUpdateCoordinator[NeewerLightState]):
         await self.protocol.async_connect(self.host, client_ip)
 
     async def _async_resolve_client_ip(self) -> str:
-        """Resolve client IP from config or local adapters."""
-        if self.entry.data.get("client_ip"):
-            return self.entry.data["client_ip"]
-        networks = await async_get_local_networks(self.hass)
-        client_ip = client_ip_for_host(self.host, networks)
+        """Resolve the client IP to embed in the handshake.
+
+        The light ignores handshakes whose embedded IP differs from the packet's
+        real source IP, so the address the kernel would send from wins. The stored
+        address can go stale (e.g. a NIC added later) and is only a fallback.
+        """
+        client_ip = await async_resolve_client_ip(self.hass, self.host)
         if client_ip is None:
-            client_ip = await async_resolve_client_ip(self.hass, self.host)
+            client_ip = self.entry.data.get("client_ip")
         if client_ip is None:
             _LOGGER.error(
                 "Cannot determine client IP for light %s on host networks",
                 self.host,
             )
             raise RuntimeError(f"Cannot determine client IP for light {self.host}")
+        stored = self.entry.data.get("client_ip")
+        if stored and stored != client_ip:
+            _LOGGER.info(
+                "Client IP for %s changed from %s to %s", self.host, stored, client_ip
+            )
         return client_ip
 
     async def async_turn_on(

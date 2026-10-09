@@ -5,11 +5,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+from collections.abc import Callable
 from typing import TYPE_CHECKING
+
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import (
     DEFAULT_COMMAND_DELAY,
     DEFAULT_PORT,
+    HANDSHAKE_ACK_TIMEOUT,
     HANDSHAKE_REPEAT,
     HEARTBEAT_ACK,
     HEARTBEAT_INTERVAL,
@@ -21,6 +25,7 @@ from .const import (
     MIN_COLOR_TEMP_PROTOCOL,
     POWER_OFF_PACKET,
     POWER_ON_PACKET,
+    RECONNECT_RETRY_INTERVAL,
     REHANDSHAKE_INTERVAL,
     WAKEUP_PACKET,
 )
@@ -93,6 +98,7 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         self._ready = asyncio.Event()
         self._command_lock = asyncio.Lock()
         self._sessions: dict[str, _LightSession] = {}
+        self._availability_listeners: dict[str, list[Callable[[], None]]] = {}
         self._heartbeat_task: asyncio.Task | None = None
 
     async def async_setup(self) -> None:
@@ -150,13 +156,42 @@ class NeewerProtocol(asyncio.DatagramProtocol):
 
     def unregister_light(self, host: str) -> None:
         """Remove a light from session tracking."""
+        self._availability_listeners.pop(host, None)
         if self._sessions.pop(host, None) is not None:
             _LOGGER.info("Unregistered Neewer light session for %s", host)
+
+    def is_available(self, host: str) -> bool:
+        """Return True while the light has a live session and answers heartbeats."""
+        session = self._sessions.get(host)
+        if session is None or not session.connected:
+            return False
+        now = asyncio.get_running_loop().time()
+        return now - session.last_heartbeat_ack < HEARTBEAT_INTERVAL * HEARTBEAT_MISS_THRESHOLD
+
+    def add_availability_listener(self, host: str, listener: Callable[[], None]) -> None:
+        """Call listener whenever the light becomes reachable or unreachable."""
+        self._availability_listeners.setdefault(host, []).append(listener)
+
+    def _notify_availability(self) -> None:
+        """Tell listeners about lights whose reachability changed."""
+        for host, session in self._sessions.items():
+            available = self.is_available(host)
+            if available == session.reported_available:
+                continue
+            session.reported_available = available
+            _LOGGER.info(
+                "Neewer light %s is now %s", host, "available" if available else "unavailable"
+            )
+            for listener in self._availability_listeners.get(host, []):
+                listener()
 
     async def async_connect(self, host: str, client_ip: str) -> None:
         """Perform handshake and wakeup for a light."""
         _LOGGER.info("Connecting to Neewer light at %s (client IP %s)", host, client_ip)
         session = self.register_light(host, client_ip)
+        session.connected = False
+        session.last_heartbeat_ack = 0.0
+        session.last_connect_attempt = asyncio.get_running_loop().time()
         handshake = build_handshake(client_ip)
         for _ in range(HANDSHAKE_REPEAT):
             await self._send(host, handshake)
@@ -164,17 +199,26 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         await asyncio.sleep(1.5)
         await self._send(host, WAKEUP_PACKET)
         await asyncio.sleep(1.5)
-        now = asyncio.get_running_loop().time()
+        await self._send(host, HEARTBEAT_PACKET)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + HANDSHAKE_ACK_TIMEOUT
+        while session.last_heartbeat_ack == 0.0 and loop.time() < deadline:
+            await asyncio.sleep(0.1)
+        if session.last_heartbeat_ack == 0.0:
+            raise TimeoutError(f"Neewer light {host} did not acknowledge the handshake")
         session.connected = True
-        session.last_handshake = now
-        session.last_heartbeat_ack = now
+        session.last_handshake = loop.time()
         _LOGGER.info("Connected to Neewer light at %s", host)
 
     async def async_ensure_connected(self, host: str) -> _LightSession:
         """Ensure session exists and is connected."""
         session = self._sessions.get(host)
         if session is None or not session.connected:
-            raise RuntimeError(f"No registered session for {host}")
+            raise HomeAssistantError(
+                f"Neewer light {host} is not connected yet, try again in a few seconds"
+            )
+        if not self.is_available(host):
+            raise HomeAssistantError(f"Neewer light {host} is not responding")
         return session
 
     async def async_power_on(self, host: str) -> None:
@@ -205,6 +249,14 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         self.transport.sendto(data, (host, DEFAULT_PORT))
         _LOGGER.debug("Sent %d bytes to %s:%d", len(data), host, DEFAULT_PORT)
 
+    async def _async_reconnect(self, host: str, session: _LightSession) -> None:
+        """Re-handshake a light, keeping the heartbeat loop alive on failure."""
+        session.last_connect_attempt = asyncio.get_running_loop().time()
+        try:
+            await self.async_connect(host, session.client_ip)
+        except Exception as err:  # noqa: BLE001 - keep heartbeat loop alive
+            _LOGGER.warning("Re-handshake failed for %s: %s", host, err)
+
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats and reconnect stale or unresponsive sessions."""
         heartbeat_timeout = HEARTBEAT_INTERVAL * HEARTBEAT_MISS_THRESHOLD
@@ -213,6 +265,10 @@ class NeewerProtocol(asyncio.DatagramProtocol):
                 now = asyncio.get_running_loop().time()
                 for host, session in list(self._sessions.items()):
                     if not session.connected:
+                        # A dropped session (failed heartbeat send or reconnect)
+                        # would otherwise stay dead forever, so retry it.
+                        if now - session.last_connect_attempt >= RECONNECT_RETRY_INTERVAL:
+                            await self._async_reconnect(host, session)
                         continue
                     stale_handshake = now - session.last_handshake >= REHANDSHAKE_INTERVAL
                     unresponsive = now - session.last_heartbeat_ack >= heartbeat_timeout
@@ -226,18 +282,14 @@ class NeewerProtocol(asyncio.DatagramProtocol):
                         else:
                             _LOGGER.debug("Periodic re-handshake for %s", host)
                         session.connected = False
-                        try:
-                            await self.async_connect(host, session.client_ip)
-                        except Exception as err:  # noqa: BLE001 - keep heartbeat loop alive
-                            _LOGGER.warning(
-                                "Re-handshake failed for %s: %s", host, err
-                            )
+                        await self._async_reconnect(host, session)
                         continue
                     try:
                         await self._send(host, HEARTBEAT_PACKET)
                     except Exception as err:  # noqa: BLE001
                         _LOGGER.debug("Heartbeat failed for %s: %s", host, err)
                         session.connected = False
+                self._notify_availability()
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
         except asyncio.CancelledError:
             pass
@@ -251,6 +303,8 @@ class _LightSession:
         self.client_ip = client_ip
         self.connected = False
         self.last_handshake = 0.0
+        self.last_connect_attempt = 0.0
+        self.reported_available: bool | None = None
         self.last_heartbeat_ack = 0.0
         self.last_response: bytes | None = None
 

@@ -7,6 +7,8 @@ HANDSHAKE_REPEAT = 3
 DEFAULT_COMMAND_DELAY = 0.5
 HEARTBEAT_INTERVAL = 2.0
 HEARTBEAT_MISS_THRESHOLD = 3  # consecutive missed heartbeats before reconnecting
+HANDSHAKE_ACK_TIMEOUT = 3.0  # seconds to wait for the first heartbeat ack after connecting
+RECONNECT_RETRY_INTERVAL = 10.0  # seconds between reconnect attempts for a dropped session
 REHANDSHAKE_INTERVAL = 1800.0  # 30 minutes, fallback periodic re-handshake
 
 MIN_BRIGHTNESS = 1

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import logging
 from typing import Any
@@ -14,7 +15,7 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
 
-from .const import CONF_CLIENT_IP, CONF_SUBNET, DOMAIN
+from .const import CONF_CLIENT_IP, CONF_SUBNET, DEFAULT_PORT, DOMAIN
 from .discovery import (
     DiscoveredDevice,
     async_discover_neewer_lights,
@@ -61,17 +62,21 @@ async def _async_validate_host(hass: HomeAssistant, host: str) -> DiscoveredDevi
             host,
             [f"{addr}/{net.prefixlen}" for addr, net in networks],
         )
-        raise CannotDetermineClientIp
+        raise CannotDetermineClientIp(host=host)
 
     _LOGGER.info("Probing light at %s using client IP %s", host, client_ip)
     try:
         found = await async_probe_light(host, client_ip)
     except OSError as err:
         _LOGGER.warning("Probe failed for %s: %s", host, err)
+        if err.errno == errno.EADDRINUSE:
+            raise PortInUse(port=str(DEFAULT_PORT)) from err
+        if err.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH):
+            raise HostUnreachable(host=host, client_ip=client_ip) from err
         raise CannotConnect from err
     if not found:
-        _LOGGER.warning("No Neewer response from %s", host)
-        raise CannotConnect
+        _LOGGER.warning("No Neewer response from %s (client IP %s)", host, client_ip)
+        raise NoResponse(host=host, client_ip=client_ip)
 
     _LOGGER.info("Validated Neewer light at %s (client IP %s)", host, client_ip)
     unique_id = f"neewer_wifi_{host.replace('.', '_')}"
@@ -264,6 +269,7 @@ class NeewerWifiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Handle manual IP entry."""
         errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
 
         if user_input is not None:
             host = user_input.get(CONF_HOST, "").strip()
@@ -272,12 +278,9 @@ class NeewerWifiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 try:
                     device = await _async_validate_host(self.hass, host)
-                except InvalidHost:
-                    errors["base"] = "invalid_host"
-                except CannotDetermineClientIp:
-                    errors["base"] = "cannot_determine_client_ip"
-                except CannotConnect:
-                    errors["base"] = "cannot_connect"
+                except ValidationError as err:
+                    errors["base"] = err.error_key
+                    placeholders = err.placeholders
                 else:
                     return await self._async_create_device_entries([device])
 
@@ -285,6 +288,7 @@ class NeewerWifiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="manual",
             data_schema=STEP_MANUAL_SCHEMA,
             errors=errors,
+            description_placeholders=placeholders,
         )
 
     async def _async_create_device_entries(
@@ -318,13 +322,45 @@ class NeewerWifiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
-class CannotConnect(HomeAssistantError):
+class ValidationError(HomeAssistantError):
+    """A host validation failure shown to the user as a form error."""
+
+    error_key = "cannot_connect"
+
+    def __init__(self, **placeholders: str) -> None:
+        super().__init__(self.error_key)
+        self.placeholders = placeholders
+
+
+class CannotConnect(ValidationError):
     """Unable to connect to the device."""
 
 
-class InvalidHost(HomeAssistantError):
+class NoResponse(ValidationError):
+    """Handshake sent but the light never answered."""
+
+    error_key = "no_response"
+
+
+class PortInUse(ValidationError):
+    """The fixed UDP port the light replies to is held by another process."""
+
+    error_key = "port_in_use"
+
+
+class HostUnreachable(ValidationError):
+    """No route from Home Assistant to the light."""
+
+    error_key = "host_unreachable"
+
+
+class InvalidHost(ValidationError):
     """Invalid host address."""
 
+    error_key = "invalid_host"
 
-class CannotDetermineClientIp(HomeAssistantError):
+
+class CannotDetermineClientIp(ValidationError):
     """Unable to determine local client IP for the subnet."""
+
+    error_key = "cannot_determine_client_ip"

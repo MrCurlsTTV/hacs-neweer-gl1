@@ -7,11 +7,14 @@
     },
     "error": {
       "cannot_connect": "Failed to connect to the light. Ensure it is on WiFi and not controlled by another app.",
-      "cannot_determine_client_ip": "Home Assistant is not on the same subnet as the light. Ensure HA has a network adapter on that subnet.",
+      "cannot_determine_client_ip": "Home Assistant has no route to {host}. Add an adapter on the light's subnet, or a route to that subnet via its router.",
+      "host_unreachable": "No route from Home Assistant ({client_ip}) to {host}. Check the route to the light's subnet and that the router forwards traffic to it.",
       "invalid_host": "Invalid IP address",
       "invalid_subnet": "Invalid subnet. Use CIDR notation such as 192.168.103.0/24",
       "no_devices_found": "No Neewer WiFi lights were discovered. Enter a subnet below or try manual setup.",
-      "no_devices_selected": "Select at least one light"
+      "no_devices_selected": "Select at least one light",
+      "no_response": "No reply from {host}. The light gives no feedback when it ignores a request, so check: it is powered on and on WiFi, no other app is controlling it, UDP port 5052 is allowed both ways, and (on a routed subnet) the light sees packets coming from {client_ip} — the handshake embeds this IP and the light ignores mismatches, e.g. after NAT.",
+      "port_in_use": "UDP port {port} is already in use on the Home Assistant host. Close the Neewer app or any other integration using it, then retry."
     },
     "step": {
       "user": {
