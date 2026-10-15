@@ -150,6 +150,9 @@ class NeewerProtocol(asyncio.DatagramProtocol):
             except asyncio.CancelledError:
                 pass
         self._heartbeat_task = None
+        for session in self._sessions.values():
+            if session.reconnect_task is not None:
+                session.reconnect_task.cancel()
         if self.transport is not None:
             self.transport.close()
             self.transport = None
@@ -169,7 +172,10 @@ class NeewerProtocol(asyncio.DatagramProtocol):
     def unregister_light(self, host: str) -> None:
         """Remove a light from session tracking."""
         self._availability_listeners.pop(host, None)
-        if self._sessions.pop(host, None) is not None:
+        session = self._sessions.pop(host, None)
+        if session is not None:
+            if session.reconnect_task is not None:
+                session.reconnect_task.cancel()
             _LOGGER.info("Unregistered Neewer light session for %s", host)
 
     def is_available(self, host: str) -> bool:
@@ -261,13 +267,28 @@ class NeewerProtocol(asyncio.DatagramProtocol):
         self.transport.sendto(data, (host, DEFAULT_PORT))
         _LOGGER.debug("Sent %d bytes to %s:%d", len(data), host, DEFAULT_PORT)
 
+    def _start_reconnect(self, host: str, session: _LightSession) -> None:
+        """Re-handshake a light in the background.
+
+        A handshake takes several seconds. Running it inline would stall the
+        heartbeats of every other light, so they would time out in turn and
+        reconnect one after another.
+        """
+        if session.reconnect_task is not None and not session.reconnect_task.done():
+            return
+        session.last_connect_attempt = asyncio.get_running_loop().time()
+        session.reconnect_task = asyncio.create_task(self._async_reconnect(host, session))
+
     async def _async_reconnect(self, host: str, session: _LightSession) -> None:
         """Re-handshake a light, keeping the heartbeat loop alive on failure."""
-        session.last_connect_attempt = asyncio.get_running_loop().time()
         try:
             await self.async_connect(host, session.client_ip)
+        except asyncio.CancelledError:
+            raise
         except Exception as err:  # noqa: BLE001 - keep heartbeat loop alive
             _LOGGER.warning("Re-handshake failed for %s: %s", host, err)
+        finally:
+            session.last_connect_attempt = asyncio.get_running_loop().time()
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats and reconnect stale or unresponsive sessions."""
@@ -276,11 +297,13 @@ class NeewerProtocol(asyncio.DatagramProtocol):
             while True:
                 now = asyncio.get_running_loop().time()
                 for host, session in list(self._sessions.items()):
+                    if session.reconnect_task is not None and not session.reconnect_task.done():
+                        continue
                     if not session.connected:
                         # A dropped session (failed heartbeat send or reconnect)
                         # would otherwise stay dead forever, so retry it.
                         if now - session.last_connect_attempt >= RECONNECT_RETRY_INTERVAL:
-                            await self._async_reconnect(host, session)
+                            self._start_reconnect(host, session)
                         continue
                     stale_handshake = now - session.last_handshake >= REHANDSHAKE_INTERVAL
                     unresponsive = now - session.last_heartbeat_ack >= heartbeat_timeout
@@ -294,7 +317,7 @@ class NeewerProtocol(asyncio.DatagramProtocol):
                         else:
                             _LOGGER.debug("Periodic re-handshake for %s", host)
                         session.connected = False
-                        await self._async_reconnect(host, session)
+                        self._start_reconnect(host, session)
                         continue
                     try:
                         await self._send(host, HEARTBEAT_PACKET)
@@ -319,6 +342,7 @@ class _LightSession:
         self.reported_available: bool | None = None
         self.last_heartbeat_ack = 0.0
         self.last_response: bytes | None = None
+        self.reconnect_task: asyncio.Task | None = None
 
 
 async def async_probe_light(
